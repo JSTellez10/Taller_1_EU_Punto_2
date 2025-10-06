@@ -44,7 +44,8 @@ p_load(rio,
        tidyr,
        osmdata,
        fixest,
-       RANN
+       RANN,
+       lubridate
        )
 
 # Cargar datos -----------------------------------------------------------
@@ -868,7 +869,7 @@ ggsave(file.path(views,"scatter_logpm2_Aparque_por_operacion_viridis.png"),
        p_logpm2_A, width = 11, height = 6.5, dpi = 300)
 
 
-# variable de tiempo de publicación de la oferta 
+# variable de tiempo de publicación de la oferta --------------
 
 housing_data_sf <- housing_data_sf %>%
   dplyr::mutate(
@@ -888,7 +889,6 @@ housing_data_sf <- housing_data_sf %>%
   dplyr::select(-start_d, -end_d)
 
 
-
 endflag <- as.Date("9999-12-31")
 
 housing_data_sf <- housing_data_sf %>%
@@ -898,3 +898,115 @@ housing_data_sf <- housing_data_sf %>%
 
 housing_data_sf <- housing_data_sf %>%
   mutate(log_dom = log1p(as.numeric(days_on_market)))
+
+# variable de categórica trimestre–año desde end_date -------------
+
+housing_data_sf <- housing_data_sf %>%
+  dplyr::mutate(
+    end_date_d = as.Date(end_date),                                # asegura clase Date
+    tri_anio   = dplyr::if_else(
+      is.na(end_date_d), NA_character_,
+      paste0(year(end_date_d), "-T", quarter(end_date_d))          # p.ej. "2021-T3"
+    ),
+    # factor ordenado cronológicamente
+    tri_anio   = factor(tri_anio, levels = sort(unique(na.omit(tri_anio))))
+  ) %>%
+  dplyr::select(-end_date_d)
+
+# filtrado de datos ------------------
+
+housing_data_sf <- housing_data_sf %>%
+  dplyr::filter(tipo %in% c("Casa", "Apartamento/Apartaestudio")) %>%
+  dplyr::mutate(dplyr::across(where(is.factor), forcats::fct_drop))
+
+
+if (!is.factor(housing_data_sf$tipo)) {
+  housing_data_sf$tipo <- factor(housing_data_sf$tipo)
+}
+housing_data_sf$tipo <- forcats::fct_drop(housing_data_sf$tipo)
+
+# Calculo de moelos --------------
+
+# Helper: arma modelos por operación
+run_models_op <- function(op_sel) {
+  df <- sf::st_drop_geometry(housing_data_sf) %>%
+    dplyr::filter(operation == op_sel)
+  
+  m1 <- feols(log_price ~ A_parque,
+              data = df, cluster = ~ UPLCODIGO)
+  
+  m2 <- feols(log_price ~ A_parque * estrato,
+              data = df, cluster = ~ UPLCODIGO)
+  
+  m3 <- feols(log_price ~ A_parque * estrato +
+                bedrooms + bathrooms + log_surface + log_dom,
+              data = df, cluster = ~ UPLCODIGO)
+  
+  m4 <- feols(log_price ~ A_parque * estrato +
+                bedrooms + bathrooms + log_surface + log_dom |
+                UPLCODIGO + tipo,
+              data = df, cluster = ~ UPLCODIGO)
+  
+  m5 <- feols(log_price ~ A_parque * estrato +
+                bedrooms + bathrooms + log_surface + log_dom |
+                UPLCODIGO + tipo + tri_anio,
+              data = df, cluster = ~ UPLCODIGO)
+  
+  list("(1)" = m1, "(2)" = m2, "(3)" = m3, "(4)" = m4, "(5)" = m5)
+}
+
+# Renombrado (solo coef_rename, SIN coef_map)
+rename_fun <- function(s) {
+  s %>%
+    str_replace("^A_parque$",        "Acceso a parques (A\u1D62)") %>%
+    str_replace("^bedrooms$",        "Dormitorios") %>%
+    str_replace("^bathrooms$",       "Ba\u00F1os") %>%
+    str_replace("^log_surface$",     "log(Superficie)") %>%
+    str_replace("^log_dom$",         "log(1 + d\u00EDas en mercado)") %>%
+    str_replace("^estrato",          "Estrato ") %>%
+    str_replace("^A_parque:estrato", "A\u1D62 \u00D7 Estrato ") %>%
+    str_replace("^A_parque:",        "A\u1D62 \u00D7 ")             # por si hay otras interacciones
+}
+
+# GOF a mostrar
+gmap <- data.frame(
+  raw   = c("r.squared", "nobs", "fixef"),
+  clean = c("R\u00B2", "N", "FE incluidas"),
+  fmt   = c(2, 0, 0)
+)
+
+# Función que arma y guarda la tabla por operación (SIN coef_map)
+make_table <- function(op_sel, file_png) {
+  mods <- run_models_op(op_sel)  # usa tu función existente
+  
+  tbl <- modelsummary::msummary(
+    mods,
+    output      = "gt",
+    coef_rename = rename_fun,
+    gof_map     = gmap,
+    stars       = c('*' = .1, '**' = .05, '***' = .01),
+    add_rows    = tibble::tibble(
+      term = "Errores est\u00E1ndar",
+      `(1)` = "Cluster: UPLCODIGO",
+      `(2)` = "Cluster: UPLCODIGO",
+      `(3)` = "Cluster: UPLCODIGO",
+      `(4)` = "Cluster: UPLCODIGO",
+      `(5)` = "Cluster: UPLCODIGO"
+    ),
+    title = paste0("Operaci\u00F3n: ", op_sel,
+                   " \u2014 log(Precio) ~ A_parque (Especificaciones (1)\u2013(5))")
+  ) %>%
+    gt::tab_options(table.font.size = "small") %>%
+    gt::tab_source_note(
+      md("**Notas:** (4) incluye FE de UPLCODIGO y tipo; (5) agrega FE de trimestre-a\u00F1o (tri_anio).")
+    )
+  
+  gt::gtsave(tbl, filename = file.path(views, file_png), zoom = 1)
+}
+
+# Vuelve a ejecutar y exportar
+make_table("Venta",    "reg_parques_venta.png")
+make_table("Alquiler", "reg_parques_alquiler.png")
+
+
+
