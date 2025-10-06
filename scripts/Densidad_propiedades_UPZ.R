@@ -88,8 +88,6 @@ p_prop <- ggplot() +
     x = NULL, y = NULL
   )
 
-p_prop
-
 ggsave(filename = file.path(views, "mapa_proporcion_venta_alquiler_UPZ.png"),
        plot = p_prop, width = 12, height = 7, dpi = 300)
 
@@ -160,8 +158,6 @@ p_upz_dens <- ggplot2::ggplot() +
     subtitle = "Habitantes por m² (agregado desde manzana; escala acotada P2–P98)",
     x = NULL, y = NULL
   )
-
-p_upz_dens
 
 ggplot2::ggsave(
   filename = file.path(views, "mapa_densidad_UPZ.png"),
