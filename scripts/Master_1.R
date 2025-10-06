@@ -177,7 +177,7 @@ ggplot(
 source(file.path(scripts, "Tabla_est_descriptivas.R"))
 
 gt_tbl_propiedades
-gt::gtsave(gt_tbl, filename = file.path(views, "descriptivas_tipo_operacion.png"))
+gt::gtsave(gt_tbl_propiedades, filename = file.path(views, "descriptivas_tipo_operacion.png"))
 
 
 # Shapefile base precios  -----------------------------------------------------------
