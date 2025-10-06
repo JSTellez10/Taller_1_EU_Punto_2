@@ -1,112 +1,9 @@
-# =====================  Densidad poblacional por UPZ (vía unión espacial) =====================
+# =====================  porporción arriendo/venta por UPZ (vía unión espacial) =====================
 
 # --- 0) Configura el nombre del código (y nombre) de UPZ en upz_shp --------
 
-upz_code_col <- "UPLCODIGO"   # <--- AJUSTA AL NOMBRE REAL (p. ej. "SETU_CCDGO", "UPZ", etc.)
-upz_name_col <- "UPLNOMBRE"       # <--- (opcional) nombre de la UPZ si existe
-
-# --- 1) Alinear CRS y sanear geometrías --------------
-
-upz_shp  <- st_make_valid(upz_shp)
-if (!st_crs(upz_shp) == st_crs(manzanas_bog)) {
-  upz_shp <- st_transform(upz_shp, st_crs(manzanas_bog))
-}
-
-# --- 2) Preparar atributos de manzana (asegurar tipos) --------
-
-manz_pre <- manzanas_bog |>
-  mutate(
-    perso_mz = suppressWarnings(as.numeric(TP27_PERSO)),
-    area_m2  = suppressWarnings(as.numeric(AREA))
-  ) |>
-  filter(!is.na(perso_mz), !is.na(area_m2), area_m2 > 0)
-
-# --- 3) Punto representativo de cada manzana y unión espacial con UPZ ---------
-
-#point_on_surface evita problemas de centroides fuera por polígonos irregulares
-
-manz_pts <- st_point_on_surface(manz_pre)
-
-keep_cols <- c(upz_code_col, intersect(upz_name_col, names(upz_shp)))
-upz_key   <- upz_shp[, keep_cols] |>
-  mutate(upz_key = str_trim(as.character(.data[[upz_code_col]])))
-
-# Unión espacial: asignar UPZ a cada manzana
-
-manz_with_upz <- st_join(
-  manz_pts,
-  upz_key,
-  join = st_within,
-  left = FALSE # solo manzanas que caen dentro de alguna UPZ
-) |>
-  st_drop_geometry() |>
-  mutate(upz_key = str_trim(as.character(upz_key)))
-
-# --- 4) Agregar a nivel UPZ y calcular densidad (hab/m²) -------------
-agg_upz <- manz_with_upz |>
-  group_by(upz_key) |>
-  summarize(
-    pob_upz  = sum(perso_mz, na.rm = TRUE),
-    area_upz = sum(area_m2,  na.rm = TRUE),
-    .groups  = "drop"
-  ) |>
-  mutate(dens_hab_m2 = if_else(area_upz > 0, pob_upz / area_upz, NA_real_))
-
-# traer nombre de UPZ si lo tienes
-if (upz_name_col %in% names(upz_shp)) {
-  upz_names <- upz_shp |>
-    st_drop_geometry() |>
-    transmute(
-      upz_key = str_trim(as.character(.data[[upz_code_col]])),
-      upz_nom = .data[[upz_name_col]]
-    ) |>
-    distinct(upz_key, upz_nom)
-  agg_upz <- left_join(agg_upz, upz_names, by = "upz_key")
-}
-
-# --- 5) Unir agregados a la geometría de UPZ para mapear ----------
-upz_join <- upz_shp |>
-  mutate(upz_key = str_trim(as.character(.data[[upz_code_col]]))) |>
-  left_join(agg_upz, by = "upz_key")
-
-# --- 6) Escala acotada (P2–P98) para evitar “aplastamiento” por outliers ---------
-lims_upz <- quantile(upz_join$dens_hab_m2, probs = c(0.02, 0.98), na.rm = TRUE)
-
-bbox_lim <- c(xmin = -74.35, ymin = 4.45, xmax = -73.95, ymax = 4.95)
-bbox_sf <- st_as_sfc(st_bbox(bbox_lim, crs = st_crs(4326)))
-upz_join_crop <- st_intersection(st_make_valid(upz_join), bbox_sf)
-
-p_upz_crop <- ggplot() +
-  geom_sf(data = upz_join_crop, aes(fill = dens_hab_m2), color = "white", linewidth = 0.15) +
-  scale_fill_viridis_c(
-    option = "C",
-    name   = "hab/m²",
-    limits = lims_upz,
-    oob    = squish,
-    labels = label_number(accuracy = 0.0001),
-    na.value = "grey90"
-  ) +
-  coord_sf(expand = FALSE) +
-  theme_minimal() +
-  labs(
-    title = "Censo 2018 — Densidad poblacional por UPZ (Bogotá)",
-    subtitle = "Recortado a bbox especificado",
-    x = NULL, y = NULL
-  )
-
-p_upz_crop
-
-# --- 7) Exportar a 'views' -------------
-
-ggsave(
-  filename = file.path(views, "mapa_densidad_UPZ.png"),
-  plot = p_upz,
-  width = 10, height = 8, dpi = 300
-)
-
-
-
-# =====================  porporción arriendo/venta por UPZ (vía unión espacial) =====================
+upz_code_col <- "UPLCODIGO"   
+upz_name_col <- "UPLNOMBRE"     
 
 # --- 1) Asignar UPZ a cada propiedad y agregar proporciones por UPZ --------
 
@@ -195,3 +92,78 @@ p_prop
 
 ggsave(filename = file.path(views, "mapa_proporcion_venta_alquiler_UPZ.png"),
        plot = p_prop, width = 12, height = 7, dpi = 300)
+
+
+# =====================  Densidad poblacional por UPZ (vía unión espacial) =====================
+
+# --- 1) Preparar atributos de manzana (tipos y filtro) --------
+
+manz_pre <- manzanas_bog %>%
+  dplyr::mutate(
+    perso_mz = as.numeric(TP27_PERSO),
+    area_m2  = as.numeric(AREA)
+  ) %>%
+  dplyr::filter(area_m2 > 0)
+
+# --- 2) Punto representativo + unión espacial con UPZ ---------
+
+manz_pts <- sf::st_point_on_surface(manz_pre)
+
+manz_with_upz <- sf::st_join(
+  manz_pts,
+  upz_shp[, c(upz_code_col, upz_name_col)],
+  join = sf::st_within,
+  left = FALSE
+) %>%
+  sf::st_drop_geometry() %>%
+  dplyr::transmute(
+    upz_key = as.character(.data[[upz_code_col]]),
+    perso_mz, area_m2
+  )
+
+# --- 3) Agregar a UPZ y calcular densidad (hab/m²) -------------
+
+agg_upz <- manz_with_upz %>%
+  dplyr::group_by(upz_key) %>%
+  dplyr::summarize(
+    pob_upz  = sum(perso_mz, na.rm = TRUE),
+    area_upz = sum(area_m2,  na.rm = TRUE),
+    .groups  = "drop"
+  ) %>%
+  dplyr::mutate(dens_hab_m2 = pob_upz / area_upz)
+
+# --- 4) Añadir densidad a `upz_join_crop` y mapear -------------
+
+upz_join_crop <- upz_join_crop %>%
+  dplyr::mutate(upz_key = as.character(upz_key)) %>%
+  dplyr::left_join(agg_upz, by = "upz_key")
+
+lims_upz <- stats::quantile(upz_join_crop$dens_hab_m2, c(0.02, 0.98), na.rm = TRUE)
+
+p_upz_dens <- ggplot2::ggplot() +
+  ggplot2::geom_sf(data = upz_join_crop, ggplot2::aes(fill = dens_hab_m2),
+                   color = "white", linewidth = 0.15) +
+  ggplot2::scale_fill_viridis_c(
+    option = "C", name = "hab/m²",
+    limits = lims_upz, oob = scales::squish,
+    labels = scales::label_number(accuracy = 0.0001),
+    na.value = "grey90"
+  ) +
+  ggplot2::coord_sf(
+    xlim = c(bbox_lim["xmin"], bbox_lim["xmax"]),
+    ylim = c(bbox_lim["ymin"], bbox_lim["ymax"]),
+    expand = FALSE
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::labs(
+    title = "Censo 2018 — Densidad poblacional por UPZ (Bogotá)",
+    subtitle = "Habitantes por m² (agregado desde manzana; escala acotada P2–P98)",
+    x = NULL, y = NULL
+  )
+
+p_upz_dens
+
+ggplot2::ggsave(
+  filename = file.path(views, "mapa_densidad_UPZ.png"),
+  plot = p_upz_dens, width = 10, height = 8, dpi = 300
+)
