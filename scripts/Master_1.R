@@ -189,7 +189,7 @@ housing_data_sf <- st_as_sf(housing_data, coords = c("lon", "lat"), crs = 4326)
 
 # Censo Nacional de Población 2018 ---------------------------------------
 #solo para cargar los archivos, la base resultante se adjunta.
-#pra descargar archivos del censo: https://microdatos.dane.gov.co/index.php/catalog/643/related-materials
+#para descargar archivos del censo: https://microdatos.dane.gov.co/index.php/catalog/643/related-materials
 
 # BBox de Bogotá (para leer solo esa zona y acelerar)
 
