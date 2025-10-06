@@ -39,7 +39,8 @@ p_load(rio,
        leaflet,
        sf,
        here,
-       scales
+       scales,
+       gt
 )
 
 # Cargar datos -----------------------------------------------------------
@@ -168,6 +169,147 @@ ggplot(
     panel.grid.minor = element_blank(),
     legend.position = "none"
   )
+
+
+# Shapefile base precios  -----------------------------------------------------------
+
+#Pasar la base de precios a sf
+
+housing_data_sf <- st_as_sf(housing_data, coords = c("lon", "lat"), crs = 4326)
+
+
+# Censo Nacional de Población 2018 ---------------------------------------
+#solo para cargar los archivos, la base resultante se adjunta.
+#pra descargar archivos del censo: https://microdatos.dane.gov.co/index.php/catalog/643/related-materials
+
+# BBox de Bogotá (para leer solo esa zona y acelerar)
+
+#bog_bbox_4326 <- st_as_text(st_as_sfc(
+#st_bbox(c(xmin = -74.35, ymin = 4.45, xmax = -73.95, ymax = 4.95), crs = 4326)
+#))
+
+# Leer shapefile recortando al BBox, poner en 4326 y sanear
+
+#manzanas_bog <- st_read(
+#dsn = here("stores", "MGN_NivelManzana_Integrado_CNPV", "MGN_ANM_MANZANA.shp"),
+#wkt_filter = bog_bbox_4326, quiet = TRUE
+#) |>
+#st_transform(4326) |>
+#st_make_valid()
+
+# Filtrar Bogotá (MPIO_CDPMP es character)
+
+#manzanas_bog <- manzanas_bog |> filter(MPIO_CDPMP == "11001")
+
+#guardar base del censo para Bogotá nivel manzana
+
+#saveRDS(
+#manzanas_bog,
+#file = file.path(stores, "manzanas_bogota_cnpv2018.rds"),
+#compress = "xz"
+#)
+
+#cargar base censo para Bogotá
+
+manzanas_bog <- readRDS(file.path(stores, "manzanas_bogota_cnpv2018.rds"))
+
+#Densidad poblacional (manzana)
+
+lims <- quantile(manzanas_bog$DENSIDAD, probs = c(0.02, 0.98), na.rm = TRUE)
+
+ggplot() +
+  geom_sf(data = manzanas_bog, aes(fill = DENSIDAD), color = NA) +
+  scale_fill_viridis_c(
+    option = "C",
+    name   = "hab/m²",
+    limits = lims,            # escala acotada P2–P98
+    oob    = scales::squish   # valores fuera de rango se “aplastan” al borde
+  ) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Censo 2018 — Densidad poblacional por manzana (Bogotá)",
+    subtitle = "Habitantes por m² (escala acotada P2–P98)",
+    x = NULL, y = NULL
+  )
+
+
+# Esadisticas descriptivas de densidad por manzanas 
+
+s_m2 <- manzanas_bog |>
+  st_drop_geometry() |>
+  summarize(
+    n      = n(),
+    min    = min(DENSIDAD, na.rm = TRUE),
+    q1     = quantile(DENSIDAD, 0.25, na.rm = TRUE),
+    median = median(DENSIDAD, na.rm = TRUE),
+    mean   = mean(DENSIDAD, na.rm = TRUE),
+    q3     = quantile(DENSIDAD, 0.75, na.rm = TRUE),
+    p90    = quantile(DENSIDAD, 0.90, na.rm = TRUE),
+    p95    = quantile(DENSIDAD, 0.95, na.rm = TRUE),
+    max    = max(DENSIDAD, na.rm = TRUE),
+    sd     = sd(DENSIDAD, na.rm = TRUE)
+  )
+
+# Misma tabla en hab/ha
+
+to_ha <- function(x) ifelse(is.numeric(x), x * 1e4, x)
+s_ha <- s_m2 |> mutate(across(everything(), to_ha))
+
+# unir tablas 
+
+stat_labels <- c(
+  n = "N (manzanas)",
+  min = "Mínimo",
+  q1  = "Q1 (25%)",
+  median = "Mediana",
+  mean   = "Media",
+  q3  = "Q3 (75%)",
+  p90 = "P90",
+  p95 = "P95",
+  max = "Máximo",
+  sd  = "Desv. estándar"
+)
+
+tabla <- tibble(
+  Estadístico = unname(stat_labels[names(s_m2)]),
+  `hab/m²` = unlist(s_m2[1, ]),
+  `hab/ha` = unlist(s_ha[1, ])
+)
+
+
+gt_tabla <- tabla |>
+  gt() |>
+  fmt_number(columns = `hab/m²`, decimals = 4) |>
+  fmt_number(columns = `hab/ha`, decimals = 1, sep_mark = ".", dec_mark = ",") |>
+  tab_header(
+    title = "Densidad poblacional — Resumen descriptivo",
+    subtitle = "Censo 2018, Bogotá D.C. (manzana)"
+  ) |>
+  cols_label(
+    `hab/m²` = html("Densidad (hab/m²)"),
+    `hab/ha` = html("Densidad (hab/ha)")
+  ) |>
+  tab_source_note(md("**Nota:** 1 ha = 10.000 m². La densidad en hab/ha es DENSIDAD·10.000."))
+
+# Exportar 
+
+gt_tabla
+gt::gtsave(gt_tabla, filename = file.path(views, "resumen_densidad_bogota.png")) 
+
+# Gráfica de distribución (histograma + densidad)
+
+ggplot(st_drop_geometry(manzanas_bog), aes(x = DENSIDAD)) +
+  geom_histogram(bins = 40, alpha = 0.7) +
+  geom_density(linewidth = 0.9) +
+  scale_x_continuous(labels = label_number(accuracy = 0.0001)) +
+  labs(
+    title = "Distribución de la densidad poblacional (hab/m²)",
+    x = "Densidad (hab/m²)",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+
 
 
 
