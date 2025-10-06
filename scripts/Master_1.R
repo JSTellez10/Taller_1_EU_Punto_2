@@ -342,10 +342,10 @@ p_upz_dens
 p_prop
 
 
-# gradientes de densidad y precios por metro cuadrado 
+# gradientes precios por metro cuadrado ----------------
 
 
-# 1) Centro Internacional (OSM) y distancia (km) -------------------------------
+# 1) Centro Internacional (OSM) y distancia (km) 
 
 bb_ci  <- getbb("Bogotá, Colombia")
 ci_osm <- opq(bbox = bb_ci) %>%
@@ -371,7 +371,7 @@ housing_data_sf <- housing_data_sf %>%
     log_p_m2  = log(price) - log(surface_total) # ln(precio/m²)
   )
 
-# 2) Pegar UPZ a la base central y definir FE -----------------------------------
+# 2) Pegar UPZ a la base central y definir FE 
 
 housing_data_sf <- sf::st_join(
   housing_data_sf,
@@ -380,7 +380,7 @@ housing_data_sf <- sf::st_join(
   left = FALSE
 )
 
-# 3) Estimar gradiente por operación con FE(tipo) y FE(UPZ) ---------------------
+# 3) Estimar gradiente por operación con FE(tipo) y FE(UPZ) 
 
 ajusta_gradiente_fe <- function(op) {
   df <- sf::st_drop_geometry(housing_data_sf) %>% dplyr::filter(operation == op)
@@ -428,8 +428,7 @@ ggsave(filename = file.path(views, "dispersion_log_pm2_distancia.png"),
        plot = p_disp, width = 10, height = 6, dpi = 300)
 
 
-# 4) Curvas predichas con IC (delta), fijando controles en su media -----------
-
+# 4) Curvas predichas con IC (delta), fijando controles en su media 
 mk_curve_abs <- function(modelo, op) {
   df_op <- housing_data_sf %>%
     sf::st_drop_geometry() %>%
@@ -490,7 +489,7 @@ curvas_abs <- dplyr::bind_rows(
   mk_curve_abs(m_alquiler, "Alquiler")
 )
 
-# 5) Escalas robustas por panel (P2–P98) y gráficos ----------------------------
+# 5) Escalas robustas por panel (P2–P98) y gráficos
 
 trim_panel <- function(df, yvar, xvar = "dist_km", p = c(0.02, 0.98)) {
   rng <- df %>%
@@ -546,3 +545,95 @@ ggsave(file.path(views, "gradiente_log_pm2_simple.png"),
        p_log_grad, width = 10, height = 6, dpi = 300)
 ggsave(file.path(views, "gradiente_pm2_simple.png"),
        p_lvl_grad, width = 10, height = 6, dpi = 300)
+
+# gradientes densidad ----------------
+
+# 1) Pegar DENSIDAD (hab/m²) de manzanas_bog a cada propiedad
+
+# Alinea CRS y une por contención espacial
+housing_data_sf <- sf::st_join(
+  housing_data_sf,
+  manzanas_bog[, "DENSIDAD"],
+  join = sf::st_within,
+  left = FALSE
+)
+
+# 2) Estimar por operación con FE(UPZ) y errores agrupados por UPZ
+ajusta_dens_fe <- function(op) {
+  df <- housing_data_sf %>%
+    sf::st_drop_geometry() %>%
+    dplyr::filter(operation == op)
+  feols(
+    DENSIDAD ~ dist_km | UPLCODIGO,
+    data    = df,
+    cluster = ~ UPLCODIGO
+  )
+}
+
+m_dens_venta    <- ajusta_dens_fe("Venta")
+m_dens_alquiler <- ajusta_dens_fe("Alquiler")
+
+# 3) Curvas predichas (nivel) con FE anclado en la UPZ modal e IC (delta)
+mk_curve_dens_fe <- function(modelo, op) {
+  df_op <- housing_data_sf %>%
+    sf::st_drop_geometry() %>%
+    dplyr::filter(operation == op)
+  
+  # Secuencia de distancias dentro del soporte observable
+  dseq <- data.frame(dist_km = seq(min(df_op$dist_km), max(df_op$dist_km), length.out = 200))
+  
+  # Coefs (intercepto y pendiente) + VCOV (agrupado)
+  keep <- intersect(c("(Intercept)", "dist_km"), names(coef(modelo)))
+  b    <- coef(modelo)[keep]
+  V    <- vcov(modelo)[keep, keep, drop = FALSE]
+  
+  # Matriz de diseño X(d)
+  X <- matrix(0, nrow = nrow(dseq), ncol = length(keep))
+  colnames(X) <- keep
+  if ("(Intercept)" %in% keep) X[, "(Intercept)"] <- 1
+  if ("dist_km"     %in% keep) X[, "dist_km"]     <- dseq$dist_km
+  
+  # Offset de FE: usamos la UPZ modal en esa operación (para anclar el nivel)
+  fe_list <- fixef(modelo)
+  ref_upz <- df_op$UPLCODIGO[ which.max(tabulate(match(df_op$UPLCODIGO, levels(df_op$UPLCODIGO)))) ]
+  fe_upz  <- if ("UPLCODIGO" %in% names(fe_list)) unname(fe_list[["UPLCODIGO"]][as.character(ref_upz)]) else 0
+  
+  # Predicción en nivel e IC95% por delta
+  fit   <- as.vector(X %*% b) + fe_upz
+  se    <- sqrt(pmax(0, rowSums((X %*% V) * X)))
+  lwr   <- fit - qnorm(0.975) * se
+  upr   <- fit + qnorm(0.975) * se
+  
+  dplyr::bind_cols(
+    dseq,
+    tibble::tibble(
+      fit_lvl = fit, lwr_lvl = lwr, upr_lvl = upr,
+      operation = op
+    )
+  )
+}
+
+curvas_dens_fe <- dplyr::bind_rows(
+  mk_curve_dens_fe(m_dens_venta,    "Venta"),
+  mk_curve_dens_fe(m_dens_alquiler, "Alquiler")
+)
+
+# 4) Gráfica y exportación
+p_dens_fe <- ggplot(curvas_dens_fe, aes(x = dist_km, y = fit_lvl)) +
+  geom_ribbon(aes(ymin = lwr_lvl, ymax = upr_lvl), alpha = 0.20) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ operation, ncol = 2, scales = "free_x") +
+  scale_y_continuous(labels = scales::label_number(accuracy = 0.0001)) +
+  labs(
+    title = "Gradiente de densidad poblacional (hab/m²) vs. distancia",
+    subtitle = "Modelo: DENSIDAD ~ dist_km | FE(UPZ); errores agrupados por UPZ; IC95% (delta)",
+    x = "Distancia al Centro Internacional (km)",
+    y = "Densidad (hab/m²)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+ggsave(file.path(views, "gradiente_densidad_FE_UPZ.png"),
+       p_dens_fe, width = 10, height = 6, dpi = 300)
+
+
