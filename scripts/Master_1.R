@@ -222,26 +222,6 @@ housing_data_sf <- st_as_sf(housing_data, coords = c("lon", "lat"), crs = 4326)
 
 manzanas_bog <- readRDS(file.path(stores, "manzanas_bogota_cnpv2018.rds"))
 
-#Densidad poblacional (manzana)
-
-lims <- quantile(manzanas_bog$DENSIDAD, probs = c(0.02, 0.98), na.rm = TRUE)
-
-ggplot() +
-  geom_sf(data = manzanas_bog, aes(fill = DENSIDAD), color = NA) +
-  scale_fill_viridis_c(
-    option = "C",
-    name   = "hab/m²",
-    limits = lims,            # escala acotada P2–P98
-    oob    = scales::squish   # valores fuera de rango se “aplastan” al borde
-  ) +
-  coord_sf(expand = FALSE) +
-  theme_minimal() +
-  labs(
-    title = "Censo 2018 — Densidad poblacional por manzana (Bogotá)",
-    subtitle = "Habitantes por m² (escala acotada P2–P98)",
-    x = NULL, y = NULL
-  )
-
 
 # Esadisticas descriptivas de densidad por manzanas 
 
@@ -319,6 +299,25 @@ ggplot(st_drop_geometry(manzanas_bog), aes(x = DENSIDAD)) +
   ) +
   theme_minimal()
 
+#Densidad poblacional (manzana)
+
+lims <- quantile(manzanas_bog$DENSIDAD, probs = c(0.02, 0.98), na.rm = TRUE)
+
+ggplot() +
+  geom_sf(data = manzanas_bog, aes(fill = DENSIDAD), color = NA) +
+  scale_fill_viridis_c(
+    option = "C",
+    name   = "hab/m²",
+    limits = lims,            # escala acotada P2–P98
+    oob    = scales::squish   # valores fuera de rango se “aplastan” al borde
+  ) +
+  coord_sf(expand = FALSE) +
+  theme_minimal() +
+  labs(
+    title = "Censo 2018 — Densidad poblacional por manzana (Bogotá)",
+    subtitle = "Habitantes por m² (escala acotada P2–P98)",
+    x = NULL, y = NULL
+  )
 
 
 
