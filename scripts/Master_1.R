@@ -344,6 +344,35 @@ p_prop
 
 # gradientes de densidad y precios por metro cuadrado 
 
+# Crear objeto de la gráfica
+
+p_disp <- ggplot(
+  housing_data_sf %>%
+    sf::st_drop_geometry() %>%
+    dplyr::mutate(
+      log_price_m2 = log(price / surface_total),
+      operation    = factor(operation, levels = c("Venta","Alquiler"))
+    ),
+  aes(x = dist_km, y = log_price_m2, color = operation)
+) +
+  geom_point(alpha = 0.25, size = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9) +
+  facet_wrap(~ operation, ncol = 2, scales = "free_x") +
+  scale_color_viridis_d(end = 0.7, guide = "none") +
+  labs(
+    title = "Distancia vs. log(Precio por m²)",
+    subtitle = "Dispersión y recta OLS por tipo de operación",
+    x = "Distancia al Centro Internacional (km)",
+    y = "log(Precio por m²)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+# Guardar en el path 'views'
+ggsave(filename = file.path(views, "dispersion_log_pm2_distancia.png"),
+       plot = p_disp, width = 10, height = 6, dpi = 300)
+
+
 # 1) Centro Internacional (OSM) y distancia (km) -------------------------------
 
 bb_ci  <- getbb("Bogotá, Colombia")
@@ -533,3 +562,6 @@ ggsave(file.path(views, "gradiente_log_pm2_sin_indice_trim.png"),
        p_log_no_index, width = 10, height = 6, dpi = 300)
 ggsave(file.path(views, "gradiente_pm2_sin_indice_trim.png"),
        p_lvl_no_index, width = 10, height = 6, dpi = 300)
+
+
+
