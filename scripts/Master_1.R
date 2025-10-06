@@ -637,3 +637,162 @@ ggsave(file.path(views, "gradiente_densidad_FE_UPZ.png"),
        p_dens_fe, width = 10, height = 6, dpi = 300)
 
 
+# Variable de estrato -----------------
+
+# 0) Columnas de estrato a usar
+cols_estr <- paste0("TP19_EE_E", 1:6)
+
+# 1) Asegurar numéricos y total por manzana
+manzanas_bog <- manzanas_bog %>%
+  dplyr::mutate(dplyr::across(dplyr::all_of(cols_estr), ~ suppressWarnings(as.numeric(.)))) %>%
+  dplyr::mutate(TOT_E = rowSums(dplyr::across(dplyr::all_of(cols_estr)), na.rm = TRUE))
+
+# 2) Proporciones por estrato (si TOT_E == 0 -> NA
+manzanas_bog <- manzanas_bog %>%
+  dplyr::mutate(dplyr::across(
+    dplyr::all_of(cols_estr),
+    ~ dplyr::if_else(TOT_E > 0, .x / TOT_E, NA_real_),
+    .names = "prop_{.col}"
+  ))
+
+# 3) Construir matriz de proporciones como numérica pura
+prop_cols <- paste0("prop_TP19_EE_E", 1:6)
+
+p_df <- manzanas_bog %>%
+  sf::st_drop_geometry() %>%
+  dplyr::select(dplyr::all_of(prop_cols)) %>%
+  dplyr::mutate(dplyr::across(dplyr::everything(), ~ as.numeric(.)))
+
+p_mat <- as.matrix(p_df)
+p_mat[is.na(p_mat)] <- -Inf  # permite usar max.col aun con NA
+
+# 4) Índice del máximo por fila (1..6)
+winner_idx <- max.col(p_mat, ties.method = "first")
+
+# 5) Fila válida y creación de ESTRATO_MZ (character)
+valid_row <- (manzanas_bog$TOT_E > 0) & apply(is.finite(p_mat), 1, any)
+
+manzanas_bog$ESTRATO_MZ <- ifelse(valid_row, as.character(winner_idx), NA_character_)
+
+# 6) Unir estrato a la base central de propiedades (spatial join)
+housing_data_sf <- sf::st_join(
+  housing_data_sf,
+  manzanas_bog %>% dplyr::select(ESTRATO_MZ),
+  join = sf::st_within,
+  left = TRUE
+)
+
+# 7) Mantener 'estrato' como character en la base central
+housing_data_sf <- housing_data_sf %>%
+  dplyr::mutate(estrato = as.character(ESTRATO_MZ)) %>%
+  dplyr::select(-ESTRATO_MZ)
+
+# Variable distancia/cercania a parques y plazas --------------
+
+# 1) Parques y plazas desde OSM (Bogotá)
+bb_bog <- getbb("Bogotá, Colombia")
+
+q_parks <- opq(bbox = bb_bog) |>
+  add_osm_feature(key = "leisure",
+                  value = c("park", "garden", "recreation_ground"),
+                  value_exact = TRUE, match_case = FALSE)
+
+q_plazas <- opq(bbox = bb_bog) |>
+  add_osm_feature(key = "place",
+                  value = "square",
+                  value_exact = TRUE, match_case = FALSE)
+
+parks_osm  <- osmdata_sf(q_parks)
+plazas_osm <- osmdata_sf(q_plazas)
+
+polys_parks  <- dplyr::bind_rows(parks_osm$osm_polygons,  parks_osm$osm_multipolygons)
+polys_plazas <- dplyr::bind_rows(plazas_osm$osm_polygons, plazas_osm$osm_multipolygons)
+
+espacios_abiertos <- dplyr::bind_rows(polys_parks, polys_plazas) |>
+  sf::st_make_valid() |>
+  dplyr::filter(!sf::st_is_empty(geometry))
+
+# 2) CRS en metros y borde del conjunto
+crs_proj <- 3116
+espacios_proj <- sf::st_transform(espacios_abiertos, crs_proj)
+housing_proj  <- sf::st_transform(housing_data_sf,   crs_proj)
+
+espacios_proj <- espacios_proj |>
+  dplyr::mutate(area_m2 = as.numeric(sf::st_area(geometry))) |>
+  dplyr::filter(is.finite(area_m2), area_m2 > 50)
+
+espacios_union_borde <- espacios_proj |>
+  sf::st_union() |>
+  sf::st_boundary()
+
+# 3) Distancia (m) y Aᵢ = −log(d+1)
+dist_m <- as.numeric(sf::st_distance(housing_proj, espacios_union_borde))
+
+housing_data_sf <- housing_data_sf |>
+  dplyr::mutate(
+    dist_parque_m = dist_m,
+    A_parque      = -log(dist_parque_m + 1)
+  )
+
+# 4) Chequeo visual rápido
+
+ggplot() +
+  geom_sf(data = sf::st_transform(espacios_proj, 4326),
+          fill = "forestgreen", color = NA, alpha = 0.4) +
+  geom_sf(data = housing_data_sf, aes(color = A_parque), size = 0.7, alpha = 0.8) +
+  scale_color_viridis_c(option = "C") +
+  coord_sf(expand = FALSE) + theme_minimal() +
+  labs(title = "Acceso a parques/plazas — Aᵢ = −log(d+1)", color = "A_parque")
+
+# 5) Gráficos 
+df_plot <- housing_data_sf |>
+  sf::st_drop_geometry() |>
+  dplyr::mutate(operation = factor(operation, levels = c("Venta","Alquiler"))) |>
+  dplyr::filter(is.finite(A_parque), is.finite(log_price), !is.na(operation))
+
+p_log_A <- ggplot(df_plot, aes(x = A_parque, y = log_price)) +
+  geom_point(aes(color = A_parque), alpha = 0.25, size = 0.8) +
+  stat_density_2d(aes(fill = after_stat(level)),
+                  geom = "polygon", alpha = 0.18, contour_var = "ndensity",
+                  show.legend = FALSE) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9, color = "black") +
+  facet_wrap(~ operation, ncol = 2, scales = "free") +
+  scale_fill_viridis_c(option = "C", guide = "none") +
+  scale_color_viridis_c(option = "C", name = expression(A[i] == -log(d[i] + 1))) +
+  labs(
+    title = "log(Precio) vs. acceso a parques",
+    subtitle = "Venta vs. Alquiler · Línea OLS con IC95%",
+    x = expression(A[i] == -log(d[i] + 1)), y = "log(Precio)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(), strip.text = element_text(face = "bold"))
+
+p_log_A
+ggsave(file.path(views,"scatter_logprice_Aparque_por_operacion_viridis.png"),
+       p_log_A, width = 11, height = 6.5, dpi = 300)
+
+df_plot_pm2 <- housing_data_sf |>
+  sf::st_drop_geometry() |>
+  dplyr::mutate(operation = factor(operation, levels = c("Venta","Alquiler"))) |>
+  dplyr::filter(is.finite(A_parque), is.finite(log_p_m2), !is.na(operation))
+
+p_logpm2_A <- ggplot(df_plot_pm2, aes(x = A_parque, y = log_p_m2)) +
+  geom_point(aes(color = A_parque), alpha = 0.25, size = 0.8) +
+  stat_density_2d(aes(fill = after_stat(level)),
+                  geom = "polygon", alpha = 0.18, contour_var = "ndensity",
+                  show.legend = FALSE) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9, color = "black") +
+  facet_wrap(~ operation, ncol = 2, scales = "free") +
+  scale_fill_viridis_c(option = "C", guide = "none") +
+  scale_color_viridis_c(option = "C", name = expression(A[i] == -log(d[i] + 1))) +
+  labs(
+    title = "log(Precio/m²) vs. acceso a parques",
+    subtitle = "Venta vs. Alquiler · Línea OLS con IC95%",
+    x = expression(A[i] == -log(d[i] + 1)), y = "log(Precio/m²)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(), strip.text = element_text(face = "bold"))
+
+p_logpm2_A
+ggsave(file.path(views,"scatter_logpm2_Aparque_por_operacion_viridis.png"),
+       p_logpm2_A, width = 11, height = 6.5, dpi = 300)
