@@ -41,7 +41,8 @@ p_load(rio,
        here,
        scales,
        gt,
-       tidyr
+       tidyr,
+       osmdata
        )
 
 # Cargar datos -----------------------------------------------------------
@@ -330,6 +331,14 @@ ggplot(upz_shp) +
   geom_sf(fill = "grey95", color = "grey30", linewidth = 0.2) +
   theme_void() +
   labs(title = "UPZ — Bogotá")
+
+# Graficas de densidad poblacional y proporción Arriendo/venta por UPZ
+
+source(file.path(scripts, "Densidad_propiedades_UPZ.R"))
+
+p_upz_dens
+
+p_prop
 
 
 
