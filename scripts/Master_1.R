@@ -87,6 +87,8 @@ source(file.path(scripts, "extraccion_tipo.R"))
 
 table(housing_data$tipo)
 
+
+
 # Creamos variable logarítmica
 
 housing_data <- housing_data %>% 
@@ -97,18 +99,13 @@ housing_data <- housing_data %>%
 
 # Relación log–log entre superficie y precio
 
-ggplot(housing_data, aes(x = log_surface, y = log_price)) +
-  # nube de puntos ligera
+p_loglog <- ggplot(housing_data, aes(x = log_surface, y = log_price)) +
   geom_point(alpha = 0.15, size = 0.6) +
-  # capas de densidad para ver concentraciones
   stat_density_2d(aes(fill = after_stat(level)),
                   geom = "polygon", alpha = 0.18, contour_var = "ndensity",
                   show.legend = FALSE) +
-  
   scale_fill_viridis_c(option = "C", guide = "none") +
-  # recta de tendencia por panel
   geom_smooth(method = "lm", se = FALSE, linewidth = 0.9, color = "black") +
-  # paneles por tipo de operación (mismos límites para comparar)
   facet_wrap(~ operation, ncol = 2, scales = "fixed") +
   labs(
     title = "Relación log–log entre superficie y precio",
@@ -119,9 +116,16 @@ ggplot(housing_data, aes(x = log_surface, y = log_price)) +
   theme_minimal(base_size = 12) +
   theme(panel.grid.minor = element_blank())
 
+
+ggsave(
+  filename = file.path(views, "relacion_log_superficie_precio.png"),
+  plot     = p_loglog,
+  width    = 10, height = 6, dpi = 300, device = "png"
+)
+
 # Boxplot por cuartiles de superficie
 
-ggplot(housing_data, aes(x = surface_q, y = log_price, fill = surface_q)) +
+p_box <- ggplot(housing_data, aes(x = surface_q, y = log_price, fill = surface_q)) +
   geom_violin(trim = FALSE, width = 0.9, alpha = 0.15, color = NA) +
   geom_boxplot(width = 0.55, notch = TRUE, outlier.alpha = 0.12) +
   stat_summary(fun = mean, geom = "point",
@@ -140,24 +144,27 @@ ggplot(housing_data, aes(x = surface_q, y = log_price, fill = surface_q)) +
   theme(plot.title = element_text(face = "bold"),
         panel.grid.minor = element_blank())
 
+
+ggsave(
+  filename = file.path(views, "box_violin_precios_por_cuartiles.png"),
+  plot     = p_box,
+  width    = 10, height = 6, dpi = 300, device = "png"
+)
+
 # Boxplot por tipo de propiedad
 
-ggplot(
+p_tipo <- ggplot(
   housing_data %>%
-    filter(is.finite(price)) %>%
-    mutate(
-      operation = factor(operation, levels = c("Venta","Alquiler"))
-    ),
+    dplyr::filter(is.finite(price)) %>%
+    dplyr::mutate(operation = factor(operation, levels = c("Venta","Alquiler"))),
   aes(
     x = log(price),
-    y = fct_reorder(tipo, price, .fun = median, .desc = FALSE)
+    y = forcats::fct_reorder(tipo, price, .fun = median, .desc = FALSE)
   )
 ) +
-  # forma de la distribución
   geom_violin(trim = FALSE, alpha = 0.15, color = NA, fill = "#6C8EBF") +
-  # caja (dispersión) con outliers atenuados
-  geom_boxplot(width = 0.55, notch = TRUE, outlier.alpha = 0.12, color = "grey20", fill = "grey90") +
-  # punto de la media
+  geom_boxplot(width = 0.55, notch = TRUE, outlier.alpha = 0.12,
+               color = "grey20", fill = "grey90") +
   stat_summary(fun = mean, geom = "point",
                shape = 21, size = 2.2, stroke = 0.3,
                fill = "white", color = "black") +
@@ -176,6 +183,13 @@ ggplot(
   )
 
 
+ggsave(
+  filename = file.path(views, "violin_box_tipo_operacion.png"),
+  plot     = p_tipo,
+  width    = 10, height = 6, dpi = 300, device = "png"
+)
+
+
 # Estadísticas descriptivas por operation × tipo
 
 source(file.path(scripts, "Tabla_est_descriptivas.R"))
@@ -189,6 +203,18 @@ gt::gtsave(gt_tbl_propiedades, filename = file.path(views, "descriptivas_tipo_op
 #Pasar la base de precios a sf
 
 housing_data_sf <- st_as_sf(housing_data, coords = c("lon", "lat"), crs = 4326)
+
+# filtrado de datos ------------------
+
+housing_data_sf <- housing_data_sf %>%
+  dplyr::filter(tipo %in% c("Casa", "Apartamento/Apartaestudio")) %>%
+  dplyr::mutate(dplyr::across(where(is.factor), forcats::fct_drop))
+
+
+if (!is.factor(housing_data_sf$tipo)) {
+  housing_data_sf$tipo <- factor(housing_data_sf$tipo)
+}
+housing_data_sf$tipo <- forcats::fct_drop(housing_data_sf$tipo)
 
 
 # Censo Nacional de Población 2018 ---------------------------------------
@@ -307,7 +333,7 @@ ggplot(st_drop_geometry(manzanas_bog), aes(x = DENSIDAD)) +
 
 lims <- quantile(manzanas_bog$DENSIDAD, probs = c(0.02, 0.98), na.rm = TRUE)
 
-ggplot() +
+p_manz <- ggplot() +
   geom_sf(data = manzanas_bog, aes(fill = DENSIDAD), color = NA) +
   scale_fill_viridis_c(
     option = "C",
@@ -322,6 +348,12 @@ ggplot() +
     subtitle = "Habitantes por m² (escala acotada P2–P98)",
     x = NULL, y = NULL
   )
+
+ggsave(
+  filename = file.path(views, "mapa_densidad_manzanas.png"),
+  plot     = p_manz,
+  width    = 10, height = 8, dpi = 300
+)
 
 # UPZ Shapefile ------------------
 
@@ -913,17 +945,7 @@ housing_data_sf <- housing_data_sf %>%
   ) %>%
   dplyr::select(-end_date_d)
 
-# filtrado de datos ------------------
 
-housing_data_sf <- housing_data_sf %>%
-  dplyr::filter(tipo %in% c("Casa", "Apartamento/Apartaestudio")) %>%
-  dplyr::mutate(dplyr::across(where(is.factor), forcats::fct_drop))
-
-
-if (!is.factor(housing_data_sf$tipo)) {
-  housing_data_sf$tipo <- factor(housing_data_sf$tipo)
-}
-housing_data_sf$tipo <- forcats::fct_drop(housing_data_sf$tipo)
 
 # Calculo de moelos --------------
 
@@ -955,7 +977,7 @@ run_models_op <- function(op_sel) {
   list("(1)" = m1, "(2)" = m2, "(3)" = m3, "(4)" = m4, "(5)" = m5)
 }
 
-# Renombrado (solo coef_rename, SIN coef_map)
+# Renombrado 
 rename_fun <- function(s) {
   s %>%
     str_replace("^A_parque$",        "Acceso a parques (A\u1D62)") %>%
@@ -975,7 +997,7 @@ gmap <- data.frame(
   fmt   = c(2, 0, 0)
 )
 
-# Función que arma y guarda la tabla por operación (SIN coef_map)
+# Función que arma y guarda la tabla por operación 
 make_table <- function(op_sel, file_png) {
   mods <- run_models_op(op_sel)  # usa tu función existente
   
@@ -1007,6 +1029,8 @@ make_table <- function(op_sel, file_png) {
 # Vuelve a ejecutar y exportar
 make_table("Venta",    "reg_parques_venta.png")
 make_table("Alquiler", "reg_parques_alquiler.png")
+
+
 
 
 
