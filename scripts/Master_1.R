@@ -319,14 +319,18 @@ ggplot() +
     x = NULL, y = NULL
   )
 
-# UPZ Shapefile
+# UPZ Shapefile ------------------
 
 upz_shp  <- st_read(file.path(stores,"UPZ_Bogota", "UPZ_Bogota.shp"),  quiet = TRUE)
+
+upz_shp  <- st_make_valid(upz_shp)
+upz_shp  <- st_transform(upz_shp, crs = 4326)
 
 ggplot(upz_shp) +
   geom_sf(fill = "grey95", color = "grey30", linewidth = 0.2) +
   theme_void() +
   labs(title = "UPZ — Bogotá")
+
 
 
 
