@@ -344,34 +344,6 @@ p_prop
 
 # gradientes de densidad y precios por metro cuadrado 
 
-# Crear objeto de la gráfica
-
-p_disp <- ggplot(
-  housing_data_sf %>%
-    sf::st_drop_geometry() %>%
-    dplyr::mutate(
-      log_price_m2 = log(price / surface_total),
-      operation    = factor(operation, levels = c("Venta","Alquiler"))
-    ),
-  aes(x = dist_km, y = log_price_m2, color = operation)
-) +
-  geom_point(alpha = 0.25, size = 0.8) +
-  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9) +
-  facet_wrap(~ operation, ncol = 2, scales = "free_x") +
-  scale_color_viridis_d(end = 0.7, guide = "none") +
-  labs(
-    title = "Distancia vs. log(Precio por m²)",
-    subtitle = "Dispersión y recta OLS por tipo de operación",
-    x = "Distancia al Centro Internacional (km)",
-    y = "log(Precio por m²)"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(panel.grid.minor = element_blank())
-
-# Guardar en el path 'views'
-ggsave(filename = file.path(views, "dispersion_log_pm2_distancia.png"),
-       plot = p_disp, width = 10, height = 6, dpi = 300)
-
 
 # 1) Centro Internacional (OSM) y distancia (km) -------------------------------
 
@@ -427,7 +399,37 @@ m_alquiler <- ajusta_gradiente_fe("Alquiler")
 
 summary(m_alquiler)
 
-# 4) Curvas predichas con IC (delta) — usando controles a su media por operación
+# Crear objeto de la gráfica
+
+p_disp <- ggplot(
+  housing_data_sf %>%
+    sf::st_drop_geometry() %>%
+    dplyr::mutate(
+      log_price_m2 = log(price / surface_total),
+      operation    = factor(operation, levels = c("Venta","Alquiler"))
+    ),
+  aes(x = dist_km, y = log_price_m2, color = operation)
+) +
+  geom_point(alpha = 0.25, size = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.9) +
+  facet_wrap(~ operation, ncol = 2, scales = "free_x") +
+  scale_color_viridis_d(end = 0.7, guide = "none") +
+  labs(
+    title = "Distancia vs. log(Precio por m²)",
+    subtitle = "Dispersión y recta OLS por tipo de operación",
+    x = "Distancia al Centro Internacional (km)",
+    y = "log(Precio por m²)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+# Guardar en el path 'views'
+ggsave(filename = file.path(views, "dispersion_log_pm2_distancia.png"),
+       plot = p_disp, width = 10, height = 6, dpi = 300)
+
+
+# 4) Curvas predichas con IC (delta), fijando controles en su media -----------
+
 mk_curve_abs <- function(modelo, op) {
   df_op <- housing_data_sf %>%
     sf::st_drop_geometry() %>%
@@ -436,57 +438,37 @@ mk_curve_abs <- function(modelo, op) {
   # Secuencia de distancias
   dseq <- data.frame(dist_km = seq(min(df_op$dist_km), max(df_op$dist_km), length.out = 200))
   
-  # --------- 4.1 ¿Qué términos (lineales) tiene el modelo en los coeficientes?
-  nm       <- names(coef(modelo))
-  has_int  <- "(Intercept)" %in% nm
-  has_quad <- "I(dist_km^2)" %in% nm
+  # Coefs que usaremos
+  coef_names <- names(stats::coef(modelo))
+  keep <- intersect(c("(Intercept)", "dist_km", "bedrooms", "bathrooms"), coef_names)
+  b    <- stats::coef(modelo)[keep]
+  V    <- stats::vcov(modelo)[keep, keep, drop = FALSE]
   
-  # Controles lineales presentes (p. ej., bedrooms, bathrooms, etc.)
-  # (Tomamos todos los coeficientes que NO sean distancias ni intercepto)
-  non_lin  <- c("(Intercept)", "dist_km", "I(dist_km^2)")
-  ctr_terms <- setdiff(nm, non_lin)
-  
-  # Valores de los controles = medias por operación (más estable para comparar)
-  ctr_means <- if (length(ctr_terms)) {
-    stats::setNames(lapply(ctr_terms, function(v) mean(df_op[[v]], na.rm = TRUE)), ctr_terms)
-  } else list()
-  
-  # --------- 4.2 Vector de coeficientes y VCOV (solo lo que entra en la predicción)
-  keep <- c(if (has_int) "(Intercept)", "dist_km", if (has_quad) "I(dist_km^2)", ctr_terms)
-  b    <- coef(modelo)[keep]
-  V    <- vcov(modelo)[keep, keep, drop = FALSE]
-  
-  # --------- 4.3 Matriz de diseño X(d): [1, dist, dist^2, controles (a su media)]
-  X <- cbind(
-    if (has_int) rep(1, nrow(dseq)),
-    dseq$dist_km,
-    if (has_quad) dseq$dist_km^2
+  # Medias de controles (solo los presentes en el modelo)
+  ctrl_means <- c(
+    bedrooms  = mean(df_op$bedrooms,  na.rm = TRUE),
+    bathrooms = mean(df_op$bathrooms, na.rm = TRUE)
   )
-  colnames(X) <- c(if (has_int) "(Intercept)", "dist_km", if (has_quad) "I(dist_km^2)")
+  ctrl_means <- ctrl_means[names(ctrl_means) %in% keep]
   
-  # Añadir columnas de controles (constantes en la secuencia)
-  if (length(ctr_terms)) {
-    X_ctrl <- matrix(
-      data = unlist(ctr_means[ctr_terms]),
-      nrow = nrow(dseq), ncol = length(ctr_terms), byrow = TRUE,
-      dimnames = list(NULL, ctr_terms)
-    )
-    X <- cbind(X, X_ctrl)
-  }
+  # Matriz de diseño con columnas por NOMBRE (evita desalineaciones)
+  X <- matrix(0, nrow = nrow(dseq), ncol = length(keep))
+  colnames(X) <- keep
+  if ("(Intercept)" %in% keep) X[, "(Intercept)"] <- 1
+  if ("dist_km"     %in% keep) X[, "dist_km"]     <- dseq$dist_km
+  for (nm in names(ctrl_means)) X[, nm] <- ctrl_means[[nm]]
   
-  # --------- 4.4 Offset de FE (tipo y UPZ) usando la combinación modal de la operación
+  # Offset de FE (combos modales)
   fe_list  <- fixef(modelo)
   ref_tipo <- df_op$tipo[ which.max(tabulate(match(df_op$tipo, levels(df_op$tipo)))) ]
   ref_upz  <- df_op$UPLCODIGO[ which.max(tabulate(match(df_op$UPLCODIGO, levels(df_op$UPLCODIGO)))) ]
-  fe_tipo  <- if ("tipo" %in% names(fe_list))      unname(fe_list[["tipo"]][as.character(ref_tipo)]) else 0
+  fe_tipo  <- if ("tipo"      %in% names(fe_list)) unname(fe_list[["tipo"]][as.character(ref_tipo)]) else 0
   fe_upz   <- if ("UPLCODIGO" %in% names(fe_list)) unname(fe_list[["UPLCODIGO"]][as.character(ref_upz)]) else 0
   fe_off   <- sum(c(fe_tipo, fe_upz), na.rm = TRUE)
   
-  # --------- 4.5 Predicción e IC en log: fit = X b + FE_off ; Var = diag(X V X')
+  # Predicción e IC (delta)
   fit_log <- as.vector(X %*% b) + fe_off
-  se_log  <- sqrt(pmax(0, rowSums((X %*% V) * X)))  # numéricamente estable
-  
-  # Pasar a niveles p/m²
+  se_log  <- sqrt(pmax(0, rowSums((X %*% V) * X)))
   lwr_log <- fit_log - qnorm(0.975) * se_log
   upr_log <- fit_log + qnorm(0.975) * se_log
   
@@ -502,13 +484,14 @@ mk_curve_abs <- function(modelo, op) {
   )
 }
 
-# Recalcular curvas para Venta y Alquiler (usa m_venta y m_alquiler que ya estimaste)
+# Curvas para Venta y Alquiler
 curvas_abs <- dplyr::bind_rows(
   mk_curve_abs(m_venta, "Venta"),
   mk_curve_abs(m_alquiler, "Alquiler")
 )
 
-# 5) Escalas robustas por panel (P2–P98) y gráficos (igual que ya tienes) -------
+# 5) Escalas robustas por panel (P2–P98) y gráficos ----------------------------
+
 trim_panel <- function(df, yvar, xvar = "dist_km", p = c(0.02, 0.98)) {
   rng <- df %>%
     dplyr::group_by(operation) %>%
@@ -532,36 +515,34 @@ curvas_abs_log_trim <- trim_panel(curvas_abs, yvar = "fit_log")
 curvas_abs_lvl_trim <- trim_panel(curvas_abs, yvar = "fit_lvl")
 
 # (a) log(Precio/m²)
-p_log_no_index <- ggplot(curvas_abs_log_trim, aes(x = dist_km, y = fit_log)) +
+p_log_grad <- ggplot(curvas_abs_log_trim, aes(x = dist_km, y = fit_log)) +
   geom_ribbon(aes(ymin = lwr_log, ymax = upr_log), alpha = 0.20) +
   geom_line(linewidth = 1) +
   facet_wrap(~ operation, ncol = 2, scales = "free") +
   labs(
     title = "Gradiente: log(Precio/m²) vs. distancia al Centro Internacional",
-    subtitle = "FE de tipo y UPZ; controles a su media; IC95% (delta). Escalas recortadas P2–P98.",
+    subtitle = "FE de tipo y UPZ; controles (bedrooms, bathrooms) a su media; IC95% (delta).",
     x = "Distancia (km)", y = "log(Precio/m²)"
   ) +
   theme_minimal(base_size = 12) +
   theme(panel.grid.minor = element_blank())
 
 # (b) Precio/m² (nivel)
-p_lvl_no_index <- ggplot(curvas_abs_lvl_trim, aes(x = dist_km, y = fit_lvl)) +
+p_lvl_grad <- ggplot(curvas_abs_lvl_trim, aes(x = dist_km, y = fit_lvl)) +
   geom_ribbon(aes(ymin = lwr_lvl, ymax = upr_lvl), alpha = 0.20) +
   geom_line(linewidth = 1) +
   facet_wrap(~ operation, ncol = 2, scales = "free") +
   scale_y_continuous(labels = scales::label_number(big.mark = ".", decimal.mark = ",")) +
   labs(
     title = "Gradiente: Precio/m² vs. distancia al Centro Internacional",
-    subtitle = "FE de tipo y UPZ; controles a su media; IC95% (delta). Escalas recortadas P2–P98.",
+    subtitle = "FE de tipo y UPZ; controles (bedrooms, bathrooms) a su media; IC95% (delta).",
     x = "Distancia (km)", y = "Precio por m²"
   ) +
   theme_minimal(base_size = 12) +
   theme(panel.grid.minor = element_blank())
 
-ggsave(file.path(views, "gradiente_log_pm2_sin_indice_trim.png"),
-       p_log_no_index, width = 10, height = 6, dpi = 300)
-ggsave(file.path(views, "gradiente_pm2_sin_indice_trim.png"),
-       p_lvl_no_index, width = 10, height = 6, dpi = 300)
-
-
-
+# Guardar
+ggsave(file.path(views, "gradiente_log_pm2_simple.png"),
+       p_log_grad, width = 10, height = 6, dpi = 300)
+ggsave(file.path(views, "gradiente_pm2_simple.png"),
+       p_lvl_grad, width = 10, height = 6, dpi = 300)
