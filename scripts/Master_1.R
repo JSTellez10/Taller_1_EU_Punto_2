@@ -43,7 +43,8 @@ p_load(rio,
        gt,
        tidyr,
        osmdata,
-       fixest
+       fixest,
+       RANN
        )
 
 # Cargar datos -----------------------------------------------------------
@@ -687,6 +688,75 @@ housing_data_sf <- housing_data_sf %>%
   dplyr::mutate(estrato = as.character(ESTRATO_MZ)) %>%
   dplyr::select(-ESTRATO_MZ)
 
+# Guardar orden original y pasar a CRS proyectado (metros)
+housing_data_sf <- housing_data_sf %>% mutate(.row_id = row_number())
+hp <- st_transform(housing_data_sf, 3116)
+
+# Preparar splits: con y sin estrato
+hp <- hp %>% mutate(estrato = as.character(estrato))
+with_estr <- hp %>% filter(!is.na(estrato))
+no_estr   <- hp %>% filter(is.na(estrato))
+
+# Si no hay nada que imputar, solo regresar al CRS 4326 y salir
+if (nrow(no_estr) == 0L || nrow(with_estr) == 0L) {
+  housing_data_sf <- hp %>% st_transform(4326) %>% arrange(.row_id) %>% select(-.row_id)
+} else {
+  # Matrices de coordenadas (metros)
+  ref_mat <- st_coordinates(with_estr)  # base con estrato conocido
+  qry_mat <- st_coordinates(no_estr)    # base a imputar
+  
+  # k vecinos (máx. 10 o el total disponible)
+  k_use <- min(10L, nrow(with_estr))
+  
+  nn <- RANN::nn2(
+    data       = ref_mat,
+    query      = qry_mat,
+    k          = k_use,
+    searchtype = "standard"
+  )
+  
+  # Enmascarar vecinos más lejanos que 500 m
+  idx <- nn$nn.idx
+  dmx <- nn$nn.dists
+  idx[dmx > 500] <- NA_integer_
+  
+  # Voto mayoritario con desempate por vecino más cercano
+  ref_estr <- with_estr$estrato
+  majority_vote <- function(idxs, ds) {
+    ok <- !is.na(idxs)
+    if (!any(ok)) return(NA_character_)
+    e <- ref_estr[idxs[ok]]
+    tb <- table(e)
+    top <- names(tb)[tb == max(tb)]
+    if (length(top) == 1) return(top)
+    # Desempate: de los top, elegir el más cercano
+    cand <- ok & (ref_estr[idxs] %in% top)
+    return(ref_estr[idxs[which.min(ds[cand])]])
+  }
+  
+  imputed_vals <- vapply(
+    seq_len(nrow(idx)),
+    function(i) majority_vote(idx[i, ], dmx[i, ]),
+    character(1)
+  )
+  
+  # Asignar imputación
+  no_estr$estrato <- imputed_vals
+  
+  # Unir, volver a 4326 y restaurar orden original
+  housing_data_sf <- bind_rows(with_estr, no_estr) %>%
+    st_transform(4326) %>%
+    arrange(.row_id) %>%
+    select(-.row_id)
+}
+
+# resumen rápido de imputaciones
+table(is.na(housing_data_sf$estrato))
+
+housing_data_sf <- housing_data_sf %>%
+  dplyr::filter(!is.na(estrato))
+
+
 # Variable distancia/cercania a parques y plazas --------------
 
 # 1) Parques y plazas desde OSM (Bogotá)
@@ -796,3 +866,35 @@ p_logpm2_A <- ggplot(df_plot_pm2, aes(x = A_parque, y = log_p_m2)) +
 p_logpm2_A
 ggsave(file.path(views,"scatter_logpm2_Aparque_por_operacion_viridis.png"),
        p_logpm2_A, width = 11, height = 6.5, dpi = 300)
+
+
+# variable de tiempo de publicación de la oferta 
+
+housing_data_sf <- housing_data_sf %>%
+  dplyr::mutate(
+    start_d = as.Date(start_date),
+    end_d   = as.Date(end_date),
+    
+    # NA si falta end_date o start_date
+    days_on_market = dplyr::case_when(
+      is.na(start_d) | is.na(end_d) ~ NA_integer_,
+      TRUE ~ as.integer(end_d - start_d)
+    ),
+    # limpia duraciones negativas
+    days_on_market  = dplyr::if_else(days_on_market >= 0, days_on_market, NA_integer_),
+    weeks_on_market = dplyr::if_else(!is.na(days_on_market),
+                                     round(days_on_market / 7, 2), NA_real_)
+  ) %>%
+  dplyr::select(-start_d, -end_d)
+
+
+
+endflag <- as.Date("9999-12-31")
+
+housing_data_sf <- housing_data_sf %>%
+  mutate(end_d = as.Date(end_date)) %>%
+  filter(is.na(end_d) | end_d != endflag) %>%
+  select(-end_d)
+
+housing_data_sf <- housing_data_sf %>%
+  mutate(log_dom = log1p(as.numeric(days_on_market)))
