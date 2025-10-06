@@ -40,8 +40,9 @@ p_load(rio,
        sf,
        here,
        scales,
-       gt
-)
+       gt,
+       tidyr
+       )
 
 # Cargar datos -----------------------------------------------------------
 
@@ -171,6 +172,14 @@ ggplot(
   )
 
 
+# Estadísticas descriptivas por operation × tipo
+
+source(file.path(scripts, "Tabla_est_descriptivas.R"))
+
+gt_tbl_propiedades
+gt::gtsave(gt_tbl, filename = file.path(views, "descriptivas_tipo_operacion.png"))
+
+
 # Shapefile base precios  -----------------------------------------------------------
 
 #Pasar la base de precios a sf
@@ -278,7 +287,7 @@ tabla <- tibble(
 )
 
 
-gt_tabla <- tabla |>
+gt_tbl_densidad <- tabla |>
   gt() |>
   fmt_number(columns = `hab/m²`, decimals = 4) |>
   fmt_number(columns = `hab/ha`, decimals = 1, sep_mark = ".", dec_mark = ",") |>
@@ -292,10 +301,10 @@ gt_tabla <- tabla |>
   ) |>
   tab_source_note(md("**Nota:** 1 ha = 10.000 m². La densidad en hab/ha es DENSIDAD·10.000."))
 
-# Exportar 
+#Exportar
 
-gt_tabla
-gt::gtsave(gt_tabla, filename = file.path(views, "resumen_densidad_bogota.png")) 
+gt_tbl_densidad
+gt::gtsave(gt_tbl_densidad, filename = file.path(views, "resumen_densidad_bogota.png")) 
 
 # Gráfica de distribución (histograma + densidad)
 
