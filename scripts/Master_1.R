@@ -45,7 +45,11 @@ p_load(rio,
        osmdata,
        fixest,
        RANN,
-       lubridate
+       lubridate,
+       purrr,
+       units,
+       modelsummary,
+       conleyreg
        )
 
 # Cargar datos -----------------------------------------------------------
