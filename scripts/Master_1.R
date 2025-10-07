@@ -1034,6 +1034,196 @@ make_table <- function(op_sel, file_png) {
 make_table("Venta",    "reg_parques_venta.png")
 make_table("Alquiler", "reg_parques_alquiler.png")
 
+# VARIANTES POR OPERACIÓN Y TABLAS: DIFERENCIAS vs CONLEY------
+
+
+# 0) Preparación mínima: asegurar lon/lat y construir df "plano"
+if (!("lon" %in% names(housing_data_sf))) {
+  coords_4326 <- sf::st_coordinates(housing_data_sf)
+  housing_data_sf <- housing_data_sf %>%
+    dplyr::mutate(lon = coords_4326[,1], lat = coords_4326[,2])
+}
+
+df <- housing_data_sf %>%
+  sf::st_drop_geometry() %>%
+  dplyr::filter(
+    is.finite(log_price),
+    is.finite(A_parque),
+    !is.na(estrato), !is.na(UPLCODIGO),
+    !is.na(tipo), !is.na(tri_anio),
+    !is.na(operation)
+  ) %>%
+  dplyr::mutate(.row_id = dplyr::row_number())
+
+
+# 1) Helpers: emparejamiento NN y construcción de diferencias
+
+mk_pairs_nn <- function(dd){
+  # Devuelve SIEMPRE un data.frame con índices globales (.row_id)
+  if (nrow(dd) < 2L) {
+    return(tibble::tibble(i_row = integer(0), j_row = integer(0)))
+  }
+  dd_sf <- sf::st_as_sf(dd, coords = c("lon","lat"), crs = 4326) |>
+    sf::st_transform(3116)
+  XY   <- sf::st_coordinates(dd_sf)
+  nn   <- RANN::nn2(data = XY, query = XY, k = 2)   # vecino ≠ sí mismo
+  j_id <- nn$nn.idx[, 2]
+  i_ix <- seq_len(nrow(dd))
+  keep <- which(i_ix < j_id)                        # evitar duplicados i<j
+  tibble::tibble(
+    i_row = dd$.row_id[i_ix[keep]],
+    j_row = dd$.row_id[j_id[keep]]
+  )
+}
+
+build_diff <- function(base, pairs){
+  if (is.null(pairs) || nrow(pairs) == 0L) return(NULL)
+  i <- pairs$i_row; j <- pairs$j_row
+  d <- function(v) base[[v]][i] - base[[v]][j]
+  out <- tibble::tibble(
+    d_log_price   = d("log_price"),
+    d_A_parque    = d("A_parque"),
+    d_bedrooms    = d("bedrooms"),
+    d_bathrooms   = d("bathrooms"),
+    d_log_surface = d("log_surface"),
+    d_log_dom     = d("log_dom"),
+    estrato_i     = as.factor(base$estrato[i]),
+    UPL_i         = base$UPLCODIGO[i]
+  ) |>
+    dplyr::filter(dplyr::if_all(dplyr::where(is.numeric), is.finite))
+  if (nrow(out) == 0L) return(NULL)
+  out
+}
+
+
+# 2) Variantes por operación (Venta / Alquiler)
+
+# Especificación con FE (para Conley)
+f_fe <- log_price ~ A_parque * estrato +
+  bedrooms + bathrooms + log_surface + log_dom | UPLCODIGO + tipo + tri_anio
+
+# VCOV Conley (ajusta cutoff si lo deseas)
+vc_conley <- fixest::vcov_conley(lat = ~ lat, lon = ~ lon, cutoff = 50)
+
+# Variante: FE + Conley (devuelve 1 modelo para una operación)
+run_conley <- function(op_val){
+  d_op <- df %>% dplyr::filter(operation == op_val)
+  mod  <- fixest::feols(f_fe, data = d_op, vcov = vc_conley)
+  attr(mod, "se.type") <- "Conley"
+  mod
+}
+
+# Variante: Diferencias espaciales (NN dentro de UPL×tipo×tri_anio)
+run_diff <- function(op_val){
+  d_op <- df %>% dplyr::filter(operation == op_val)
+  pairs_df <- d_op %>%
+    dplyr::group_by(UPLCODIGO, tipo, tri_anio) %>%
+    dplyr::group_modify(~ mk_pairs_nn(.x)) %>%
+    dplyr::ungroup()
+  df_diff <- build_diff(d_op, pairs_df)
+  if (is.null(df_diff)) {
+    # modelo "placeholder" si no hay pares suficientes
+    mod <- stats::lm(d_log_price ~ 1, data = data.frame(d_log_price = NA_real_))
+    attr(mod, "se.type") <- "HC (dif.)"
+    attr(mod, "note")    <- "Sin pares NN suficientes para diferencias espaciales"
+    return(mod)
+  }
+  mod <- stats::lm(
+    d_log_price ~ d_A_parque * estrato_i + d_bedrooms + d_bathrooms + d_log_surface + d_log_dom,
+    data = df_diff
+  )
+  attr(mod, "se.type") <- "HC (dif.)"
+  mod
+}
+
+# 3) Correr los 4 modelos (2 variantes × 2 operaciones)
+
+m_diff_venta    <- run_diff("Venta")
+m_diff_alquiler <- run_diff("Alquiler")
+
+m_conley_venta    <- run_conley("Venta")
+m_conley_alquiler <- run_conley("Alquiler")
+
+# 4) Tablas separadas por variante (comparan Alquiler vs Venta)
+
+# Renombrado amigable para ambas tablas
+rename_fun_all <- function(s){
+  s %>%
+    stringr::str_replace("^d_A_parque$",          "\u0394 Acceso a parques (A\u1D62)") %>%
+    stringr::str_replace("^A_parque$",            "Acceso a parques (A\u1D62)") %>%
+    stringr::str_replace("^d_bedrooms$",          "\u0394 Dormitorios") %>%
+    stringr::str_replace("^d_bathrooms$",         "\u0394 Ba\u00F1os") %>%
+    stringr::str_replace("^d_log_surface$",       "\u0394 log(Superficie)") %>%
+    stringr::str_replace("^d_log_dom$",           "\u0394 log(1 + d\u00EDas en mercado)") %>%
+    stringr::str_replace("^bedrooms$",            "Dormitorios") %>%
+    stringr::str_replace("^bathrooms$",           "Ba\u00F1os") %>%
+    stringr::str_replace("^log_surface$",         "log(Superficie)") %>%
+    stringr::str_replace("^log_dom$",             "log(1 + d\u00EDas en mercado)") %>%
+    stringr::str_replace("^estrato",              "Estrato ") %>%
+    stringr::str_replace("^d_A_parque:estrato_i", "A\u1D62 \u00D7 Estrato (dif)")
+}
+
+gmap_common <- data.frame(
+  raw   = c("r.squared", "nobs", "fixef", "se.type"),
+  clean = c("R\u00B2", "N", "FE incluidas", "Errores est\u00E1ndar"),
+  fmt   = c(2, 0, 0, 0)
+)
+
+# TABLA 1: DIFERENCIAS ESPACIALES (Alquiler vs Venta) ----------
+mods_diff <- list(
+  "Venta - Dif. espaciales"    = m_diff_venta,
+  "Alquiler - Dif. espaciales" = m_diff_alquiler
+)
+
+# Si se perdió el atributo de SE, lo restauramos de forma segura
+if (is.null(attr(mods_diff[[1]], "se.type"))) attr(mods_diff[[1]], "se.type") <- "HC (dif.)"
+if (is.null(attr(mods_diff[[2]], "se.type"))) attr(mods_diff[[2]], "se.type") <- "HC (dif.)"
+
+tbl_diff <- modelsummary::msummary(
+  mods_diff,
+  output      = "gt",
+  coef_rename = rename_fun_all,
+  gof_map     = gmap_common,
+  stars       = c('*' = .1, '**' = .05, '***' = .01),
+  title       = "Diferencias espaciales (NN dentro de UPZ × tipo × trimestre): Alquiler vs. Venta"
+) |>
+  gt::tab_options(table.font.size = "small") |>
+  gt::tab_source_note(
+    gt::md(paste0(
+      "**Notas:** Δ-regresión con pares NN dentro de (UPLCODIGO, tipo, tri_anio). ",
+      "La interacción captura heterogeneidad por estrato del primer elemento del par. ",
+      "Errores estándar: HC. Si una columna muestra NA, no hubo pares suficientes."
+    ))
+  )
+
+gt::gtsave(tbl_diff, filename = file.path(views, "tabla_diferencias_vs_operacion.png"), zoom = 1)
+
+# TABLA 2: FE + CONLEY (Alquiler vs Venta) ----------
+mods_conley <- list(
+  "Venta - FE+Conley"    = m_conley_venta,
+  "Alquiler - FE+Conley" = m_conley_alquiler
+)
+
+attr(mods_conley[[1]], "se.type") <- "Conley"
+attr(mods_conley[[2]], "se.type") <- "Conley"
+
+tbl_conley <- modelsummary::msummary(
+  mods_conley,
+  output      = "gt",
+  coef_rename = rename_fun_all,
+  gof_map     = gmap_common,
+  stars       = c('*' = .1, '**' = .05, '***' = .01),
+  title       = "FE + Conley (UPZ, tipo, trimestre-año): Alquiler vs. Venta"
+) |>
+  gt::tab_options(table.font.size = "small") |>
+  gt::tab_source_note(
+    gt::md(paste0(
+      "**Notas:** Especificación: log(Precio) ~ A_parque × estrato + controles | FE(UPLCODIGO, tipo, tri_anio). ",
+      "Errores Conley con cutoff 50 km (ajustable)."
+    ))
+  )
+
+gt::gtsave(tbl_conley, filename = file.path(views, "tabla_conley_vs_operacion.png"), zoom = 1)
 
 
 
